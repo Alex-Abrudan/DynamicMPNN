@@ -131,30 +131,7 @@ Decoy normalization is used for fair comparison. Output: `summary_af3_results.cs
 
 ## Data Preprocessing (optional)
 
-To regenerate `.pt` files from scratch, start from the AlphaFold mmCIF database. See `src/dynamicmpnn/scripts/README.md` for full details.
-
-```bash
-cd src/dynamicmpnn/scripts
-
-# 1-2. Cluster sequences (mmseqs2 at 30/80% identity)
-sbatch clustering/sbatch_cluster.sh
-
-# 3. Gather sequences per cluster + ClustalOmega alignment
-sbatch pipeline/slurm_gather_seq80
-
-# 4. Process to .pt files
-sbatch pipeline/slurm_process_pt_seq80
-
-# 5. Run foldseek for TM-scores
-sbatch your_slurm_foldseek.sh  # wrapper for foldseek/tm_foldseek.py
-
-# 6. Enrich .pt with TM-scores
-sbatch pipeline/slurm_add_TM_scores_seq80
-
-# 7-8. Build train/val/test splits
-python clustering/build_train_val_test_split.py
-python splits/build_val_test_pts.py
-```
+To regenerate `.pt` files from scratch, start from the AlphaFold mmCIF database. See [`src/dynamicmpnn/scripts/README.md`](src/dynamicmpnn/scripts/README.md) for the full pipeline.
 
 ## Citation
 
