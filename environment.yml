@@ -1,0 +1,31 @@
+name: dynamicmpnn
+channels:
+  - pyg
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip>=24
+  - pytorch
+  - numpy<2
+  - pandas
+  - scipy
+  - scikit-learn
+  - biopython
+  - matplotlib
+  - omegaconf
+  - hydra-core
+  - loguru
+  - python-dotenv
+  - beartype
+  - jaxtyping
+  - einops
+  - pytest
+  - pyg::pyg
+  - pyg::pytorch-scatter
+  - pyg::pytorch-cluster
+  - pip:
+      - graphein==1.7.6
+      - pytorch-lightning>=2.0
+      - lovely-tensors
+      - wandb

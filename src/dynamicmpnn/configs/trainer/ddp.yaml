@@ -1,0 +1,14 @@
+defaults:
+  - default.yaml
+
+# NOTE: https://github.com/facebookresearch/hydra/issues/2070
+# for improved Hydra + Lightning + DDP support is not merged yet
+strategy: ddp_find_unused_parameters_true
+
+accelerator: gpu
+devices: 1
+num_nodes: 1
+sync_batchnorm: True
+
+accumulate_grad_batches: 1
+reload_dataloaders_every_n_epochs: 0

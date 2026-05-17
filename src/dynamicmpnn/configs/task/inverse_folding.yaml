@@ -1,0 +1,19 @@
+# @package _global_
+
+dataset:
+  num_classes: 20
+
+task:
+  task: "inverse_folding"
+  classification_type: "multiclass"
+  metric_average: "micro"
+
+  losses:
+    residue_type: cross_entropy
+  label_smoothing: 0.05
+  ignore_index: 20
+
+  output:
+    - residue_type
+  supervise_on:
+    - residue_type

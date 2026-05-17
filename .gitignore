@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Environment (secrets)
+.env
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime/logs
+*.log
+outputs/
+runs/
+**/.hydra/
+
+# Processed data (download from Zenodo)
+data/*_pt_*/

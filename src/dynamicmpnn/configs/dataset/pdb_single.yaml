@@ -1,0 +1,15 @@
+# Single-chain dataset config
+# Uses train_pt_single_chain (k conformations of the same chain)
+# For use with pooling_strategy="single_chain_k" in the model config
+
+datamodule:
+  _target_: dynamicmpnn.datamodules.datamodule.MultiConfProteinDataModule
+  processed_dir: ${oc.env:PROCESSED_DIR_SINGLE,data/train_pt_single_chain}
+  val_processed_dir: ${oc.env:VAL_PROCESSED_DIR_SINGLE,data/val_pt_single_chain}
+  test_processed_dir: ${oc.env:TEST_PROCESSED_DIR_SINGLE,data/test_pt_single_chain}
+  val_splitting_csv: ${oc.env:VAL_CSV,src/dynamicmpnn/data/val_pts_single.csv}
+  cluster_sampling_csv: ${oc.env:CLUSTER_CSV,src/dynamicmpnn/data/train_single_chain_pool.csv}
+  num_workers: 8
+  in_memory: False
+  batch_size: 2
+  short_dataset: False

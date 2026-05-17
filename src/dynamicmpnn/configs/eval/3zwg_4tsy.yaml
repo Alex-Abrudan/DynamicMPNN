@@ -1,0 +1,25 @@
+model_ref: /path/to/model.ckpt
+af3_evaluate: true
+af3:
+  model_seeds: [0, 1, 2]
+targets:
+  state1:
+    pdb_path: package://benchmarks/pdb/3ZWG.pdb
+    chain_id: N
+  state2:
+    pdb_path: package://benchmarks/pdb/4TSY.pdb
+    chain_id: D
+alignment:
+  state1: "(3, 178)"
+  state2: "(1, 176)"
+sequence_recovery:
+  target_sequences:
+    - "VAGAVIDGAGLGFDVLKTVLEALGNVKRKIAVGIDNESGKTWTAMNTYFRSGTSDIVLPHKVAHGKALLYNGQKNRGPVATGVVGVIAYSMSDGNTLAVLFSVPYDYNWYSNWWNVRVYKGQKRADQRMYEELYYHRSPFRGDNGWHSRGLGYGLKSRGFMNSSGHAILEIHVTKA"
+    - "VAGAVIDGAGLGFDVLKTVLEALGNVKRKIAVGIDNESGKTWTAMNTYFRSGTSDIVLPHKVAHGKALLYNGQKNRGPVATGVVGVIAYSMSDGNTLAVLFSVPYDYNWYSNWWNVRVYKGQKRADQRMYEELYYHRSPFRGDNGWHSRGLGYGLKSRGFMNSSGHAILEIHVTKA"
+decoys:
+  state1:
+    pdb_path: package://benchmarks/pdb/4H2I.pdb
+    chain_id: A
+  state2:
+    pdb_path: package://benchmarks/pdb/5EQD.pdb
+    chain_id: A

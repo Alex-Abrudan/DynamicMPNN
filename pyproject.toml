@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamicmpnn"
+version = "0.1.0"
+description = "Inference and evaluation tools for DynamicMPNN."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[project.scripts]
+dynamicmpnn-evaluate = "dynamicmpnn.evaluate:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dynamicmpnn = [
+  "configs/**/*.yaml",
+  "resources/benchmarks/pdb/*.pdb",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

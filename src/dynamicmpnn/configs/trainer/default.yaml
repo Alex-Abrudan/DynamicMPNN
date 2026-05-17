@@ -1,0 +1,19 @@
+_target_: pytorch_lightning.trainer.Trainer
+
+default_root_dir: ${env.paths.output_dir}
+
+min_epochs: 3 # prevents early stopping
+max_epochs: 200
+
+accelerator: cpu
+
+# mixed precision for extra speed-up
+precision: "bf16-mixed" # take out for finetuning
+
+# perform a validation loop every N training epochs
+check_val_every_n_epoch: 1
+
+# set True to to ensure deterministic results
+# makes training slower but gives more reproducibility than just setting seeds
+deterministic: False
+num_sanity_val_steps: 2

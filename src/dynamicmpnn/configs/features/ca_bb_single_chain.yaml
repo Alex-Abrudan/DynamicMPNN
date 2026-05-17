@@ -1,0 +1,19 @@
+_target_: dynamicmpnn.features.featurizer.ProteinGraphFeaturiserSingleChain
+representation: ca_bb
+k: 5  # Number of conformations to use (can override via command line)
+scalar_node_features:
+  - sequence
+  - sequence_positional_encoding
+  - alpha
+  - kappa
+  - dihedrals
+vector_node_features: ["orientation"]
+edge_types:
+  - knn_32
+scalar_edge_features:
+  - edge_distance
+  - edge_type
+  - rbf_16
+vector_edge_features: ["edge_vectors"]
+noise_scale: 0.1
+threshold: 0.7

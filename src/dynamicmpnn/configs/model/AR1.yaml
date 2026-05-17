@@ -1,0 +1,32 @@
+_target_: dynamicmpnn.modules.models.models.DynamicMPNN
+
+node_in_dim: [27, 2] # Input dimensions for node features (scalar channels, vector channels)
+
+node_h_dim: [128, 16] # Hidden dimensions for node features (scalar channels, vector channels)
+
+edge_in_dim: [18, 1] # (num_bb_atoms x num_rbf + num_bb_atoms, num_bb_atoms)
+# Input dimensions for edge features (scalar channels, vector channels)
+
+edge_h_dim: [32, 4] # Hidden dimensions for edge features (scalar channels, vector channels)
+
+num_layers: 8 # Backwards compat fallback (used if encoder/decoder are not set)
+num_encoder_layers: 8 # Encoder layers (global message passing)
+num_decoder_layers: 8 # Decoder layers 
+
+n_edge_gvps: 0
+
+drop_rate: 0.5 # Dropout rate
+
+out_dim: 20 # Output dimension (20 amino acids for Proteins)
+
+n_samples: 16 # Number of samples to generate
+
+temperature: 0.1 #Sampling temperature for evaluating recovery
+
+pooling_strategy: "all_chains_equal"
+
+n_pooled_encoder_layers: 0 # >0 enables sample_v3 hybrid AR (requires sample-v3 branch)
+
+refresh_interval: 10 # >0 refreshes cached node features every N steps during AR decode (reduces staleness, adds O(n^2/N) cost)
+
+#aggr: "mean"

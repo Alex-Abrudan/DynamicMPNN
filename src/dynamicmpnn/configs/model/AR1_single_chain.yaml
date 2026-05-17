@@ -1,0 +1,31 @@
+_target_: dynamicmpnn.modules.models.models.DynamicMPNN
+
+node_in_dim: [27, 2] # Input dimensions for node features (scalar channels, vector channels)
+
+node_h_dim: [128, 16] # Hidden dimensions for node features (scalar channels, vector channels)
+
+edge_in_dim: [18, 1] # (num_bb_atoms x num_rbf + num_bb_atoms, num_bb_atoms)
+# Input dimensions for edge features (scalar channels, vector channels)
+
+edge_h_dim: [32, 4] # Hidden dimensions for edge features (scalar channels, vector channels)
+
+num_layers: 8 # Backwards compat fallback (used if encoder/decoder are not set)
+num_encoder_layers: 8 # Encoder layers (global message passing)
+num_decoder_layers: 4 # Decoder layers (local autoregressive message passing)
+
+n_edge_gvps: 0
+
+drop_rate: 0.5 # Dropout rate
+
+out_dim: 20 # Output dimension (20 amino acids for Proteins)
+
+n_samples: 16 # Number of samples to generate
+
+temperature: 0.1 # Sampling temperature for evaluating recovery
+
+# Single-chain mode: pool k conformations of the same chain
+pooling_strategy: "single_chain_k"
+
+n_pooled_encoder_layers: 4 # Post-pooling encoder layers for enriched representations
+
+refresh_interval: 0 # Not used in single_chain_k mode

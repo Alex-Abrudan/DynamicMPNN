@@ -1,0 +1,41 @@
+# @package _global_
+# Single-chain k=3 training with TM-score enriched data
+# - Uses train_pt_single_chain data (k conformations of same chain)
+# - Model: AR1_single_chain with pooling_strategy=single_chain_k
+# - Features: ca_bb_single_chain with k=3 override
+#
+# Usage:
+#   python train.py experiment=single_chain_k_conf
+
+defaults:
+  - override /dataset: pdb_single
+  - override /features: ca_bb_single_chain
+  - override /model: AR1_single_chain
+
+name: single_chain_k_conf
+seed: 42
+
+# Dataset: single-chain training and validation CSVs
+dataset:
+  datamodule:
+    cluster_sampling_csv: src/dynamicmpnn/data/train_single_chain_pool.csv
+    val_splitting_csv: src/dynamicmpnn/data/val_pts_single.csv
+    num_workers: 10
+    batch_size: 2
+
+# k=3 conformations per cluster
+features:
+  k: 3
+
+# Model
+model:
+  n_samples: 3
+  temperature: 0.1
+
+# Trainer
+trainer:
+  devices: -1
+  precision: bf16-mixed
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 4
+  reload_dataloaders_every_n_epochs: 0

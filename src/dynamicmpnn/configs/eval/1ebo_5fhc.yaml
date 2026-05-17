@@ -1,0 +1,25 @@
+model_ref: /path/to/model.ckpt
+af3_evaluate: true
+af3:
+  model_seeds: [0, 1, 2]
+targets:
+  state1:
+    pdb_path: package://benchmarks/pdb/1EBO.pdb
+    chain_id: E
+  state2:
+    pdb_path: package://benchmarks/pdb/5FHC.pdb
+    chain_id: J
+alignment:
+  state1: "(1, 78)"
+  state2: "(21, 98)"
+sequence_recovery:
+  target_sequences:
+    - "QIEDKIEEILSKIYHIENEIARIKKLIGEADGLIEGLRQLANETTQALQLFLRATTELRTFSILNRKAIDFLLQRWGG"
+    - "DEGAAIGLAWIPYFGPAAEGIYIEGLMHNQDGLICGLRQLANETTQALQLFLRATTELRTFSILNRKAIDFLLQRWGG"
+decoys:
+  state1:
+    pdb_path: package://benchmarks/pdb/6C6S.pdb
+    chain_id: D
+  state2:
+    pdb_path: package://benchmarks/pdb/1XSA-23.pdb
+    chain_id: A

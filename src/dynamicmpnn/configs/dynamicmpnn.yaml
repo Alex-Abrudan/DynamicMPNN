@@ -1,0 +1,28 @@
+# @package _global_
+# Base config for DynamicMPNN training
+# Override via command line or use experiment configs (experiment=seq30_reload)
+
+name: dynamicmpnn
+seed: 42
+num_workers: 8
+
+defaults:
+  - env: default
+  - dataset: pdb
+  - features: ca
+  - model: AR1
+  - callbacks: default
+  - optimiser: adam
+  - scheduler: none
+  - trainer: ddp
+  - hydra: default
+  - metrics: train_val_test
+  - task: inverse_folding
+  - logger: wandb
+  - extras: default
+  - debug: null
+  - optional experiment: null
+  - _self_
+
+task_name: train
+test: False

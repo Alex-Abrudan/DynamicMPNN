@@ -1,0 +1,50 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - features: ca
+  - optional eval: null
+
+name: dynamicmpnn_evaluate
+output_dir: ${hydra:runtime.output_dir}
+
+model:
+  temperature: null
+  refresh_interval: null
+
+eval:
+  model_ref: ???
+  model_registry: {}
+  num_samples: 25
+  device: auto
+  sampling_mode: multi
+  refold_mode: multi
+  af3_evaluate: false
+  targets:
+    state1:
+      pdb_path: ???
+      chain_id: ???
+    state2:
+      pdb_path: ???
+      chain_id: ???
+  alignment:
+    state1: null
+    state2: null
+  sequence_recovery:
+    target_sequences: null
+  decoys:
+    state1: null
+    state2: null
+  af3:
+    executable: ${oc.env:AF3_EXECUTABLE,null}
+    script: ${oc.env:AF3_SCRIPT,null}
+    model_dir: ${oc.env:AF3_MODEL_DIR,null}
+    db_dir: ${oc.env:AF3_DB_DIR,null}
+    env_script: ${oc.env:AF3_ENV_SCRIPT,null}
+    env: {}
+    use_msa: false
+    unpaired_msa: null
+    unpaired_msa_path: null
+    paired_msa: null
+    paired_msa_path: null
+    model_seeds: [0, 1, 2]

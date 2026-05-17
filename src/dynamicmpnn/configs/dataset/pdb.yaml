@@ -1,0 +1,11 @@
+datamodule:
+  _target_: dynamicmpnn.datamodules.datamodule.MultiConfProteinDataModule
+  processed_dir: ${oc.env:PROCESSED_DIR,data/train_pt_multi_chain}
+  val_processed_dir: ${oc.env:VAL_PROCESSED_DIR,data/val_pt_multi_chain}
+  test_processed_dir: ${oc.env:TEST_PROCESSED_DIR,data/test_pt_multi_chain}
+  val_splitting_csv: ${oc.env:VAL_CSV,src/dynamicmpnn/data/val_pts.csv}
+  cluster_sampling_csv: ${oc.env:CLUSTER_CSV,src/dynamicmpnn/data/train_seq80_pool_filtered.csv}
+  num_workers: 8
+  in_memory: False
+  batch_size: 2
+  short_dataset: False

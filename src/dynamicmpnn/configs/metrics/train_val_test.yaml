@@ -1,0 +1,58 @@
+# @package metrics
+
+metrics_train:
+
+  accuracy:
+    _target_: torchmetrics.Accuracy
+    task: ${task.classification_type}
+    average: ${task.metric_average}
+    num_classes: ${dataset.num_classes}
+    top_k: 1
+
+  perplexity:
+    _target_: torchmetrics.Perplexity
+    ignore_index: -100
+  
+  _self_: True 
+
+metrics_val:
+
+  custom_perplexity:
+    _target_: null
+    ignore_index: -100
+  
+  #sc_esmflow:
+    #_target_: dynamicmpnn.evaluator.SC_ESMflow
+    #similarity_metrics: ["tm"]
+    #esmflow_samples: null # hardcoded in train.py
+    #esmflow_checkpoint: distilled # base
+    #esmflow_split: eval # eval
+    #alphaflow_data_dir: ${oc.env:DATA_PATH}/alphaflow
+    #alphaflow_code_dir: ${oc.env:ALPHAFLOW_CODE_DIR}
+  
+  sequence_recovery:  
+    _target_: null
+  
+  _self_: True
+
+metrics_test:
+
+  custom_perplexity:
+    _target_: null
+    ignore_index: -100
+  
+  #sc_esmflow:
+    #_target_: dynamicmpnn.evaluator.SC_ESMflow
+    #similarity_metrics: ["tm"]
+    #esmflow_samples: null # hardcoded in train.py
+    #esmflow_checkpoint: distilled # base
+    #esmflow_split: eval # eval
+    #alphaflow_data_dir: ${oc.env:DATA_PATH}/alphaflow
+    #alphaflow_code_dir: ${oc.env:ALPHAFLOW_CODE_DIR}
+  
+  sequence_recovery:  
+    _target_: null
+  
+  _self_: True
+  
+

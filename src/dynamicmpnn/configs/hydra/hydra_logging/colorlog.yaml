@@ -1,0 +1,18 @@
+version: 1
+formatters:
+  simple:
+    format: '%(log_color)s%(levelname)s:%(name)s:%(message)s'
+    log_colors:
+      DEBUG:    white
+      INFO:     green
+      WARNING:  yellow
+      ERROR:    red
+      CRITICAL: red,bg_white
+handlers:
+  console:
+    class: colorlog.StreamHandler
+    formatter: simple
+    stream: ext://sys.stdout
+root:
+  handlers: [console]
+  level: INFO

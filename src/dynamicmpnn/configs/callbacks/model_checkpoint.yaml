@@ -1,0 +1,19 @@
+# https://pytorch-lightning.readthedocs.io/en/latest/api/lightning.callbacks.ModelCheckpoint.html
+
+# Save the model periodically by monitoring a quantity.
+# Look at the above link for more detailed information.
+model_checkpoint:
+  _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  dirpath: ${oc.env:PROJECT_PATH}/checkpoints # directory to save the model file
+  filename: "best_checkpoint_codnas" # checkpoint filename
+  monitor: "val/loss" # name of the logged metric which determines when model is improving
+  verbose: True # verbosity mode
+  save_last: False # additionally always save an exact copy of the last checkpoint to a file last.ckpt
+  save_top_k: 1 # save k best models (determined by above metric)
+  mode: "min" # "max" means higher metric value is better, can be also "min"
+  auto_insert_metric_name: False # when True, the checkpoints filenames will contain the metric name
+  save_weights_only: False # if True, then only the model’s weights will be saved
+  every_n_train_steps: 5 # number of training steps between checkpoints
+  train_time_interval: null # checkpoints are monitored at the specified time interval
+  every_n_epochs: null # number of epochs between checkpoints
+  save_on_train_epoch_end: null # whether to run checkpointing at the end of the training epoch or the end of validation

@@ -1,0 +1,19 @@
+_target_: dynamicmpnn.features.featurizer.ProteinGraphFeaturiser
+representation: ca_bb
+scalar_node_features:
+  - sequence
+  - sequence_positional_encoding
+  - alpha
+  - kappa
+  - dihedrals
+vector_node_features: ["orientation"]
+edge_types:
+  - knn_32
+scalar_edge_features:
+  - edge_distance
+  - edge_type
+  - rbf_16
+vector_edge_features: ["edge_vectors"]
+noise_scale: 0.1
+threshold: 0.7
+pair_tm_tau: 0.0  # 0.0 = uniform pair sampling; >0 biases toward structurally dissimilar pairs

@@ -1,0 +1,37 @@
+# @package _global_
+# Seq30 sampling without dataloader reload
+# - Dataloader NOT reloaded each epoch (reload_dataloaders_every_n_epochs=0)
+#
+# Usage:
+#   python train.py experiment=seq30_no_reload
+
+name: seq30_no_reload
+seed: 42
+
+# Dataset
+dataset:
+  datamodule:
+    cluster_sampling_csv: src/dynamicmpnn/data/train_seq80_pool_filtered.csv
+    val_splitting_csv: src/dynamicmpnn/data/val_pts.csv
+    num_workers: 10
+    batch_size: 2
+
+features:
+  pair_tm_tau: 0.3
+
+# Model
+model:
+  n_pooled_encoder_layers: 4
+  n_samples: 3
+  pooling_strategy: all_chains_equal
+  refresh_interval: 4
+  temperature: 0.1
+  num_decoder_layers: 4
+
+# Trainer: no dataloader reload
+trainer:
+  devices: -1
+  precision: bf16-mixed
+  check_val_every_n_epoch: 1
+  accumulate_grad_batches: 4
+  reload_dataloaders_every_n_epochs: 0
