@@ -46,6 +46,14 @@ def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int)
     model_cfg = _checkpoint_model_config(checkpoint)
     OmegaConf.set_struct(model_cfg, False)
 
+    # Remap old module paths to new ones
+    if "_target_" in model_cfg:
+        old_target = model_cfg["_target_"]
+        if old_target.startswith("dynamicprot.src."):
+            new_target = old_target.replace("dynamicprot.src.", "dynamicmpnn.")
+            new_target = new_target.replace("AutoregressiveMultiGNNv1", "DynamicMPNN")
+            model_cfg["_target_"] = new_target
+
     model_cfg.n_samples = num_samples
     if cfg.model.get("refresh_interval") is not None:
         model_cfg.refresh_interval = cfg.model.refresh_interval

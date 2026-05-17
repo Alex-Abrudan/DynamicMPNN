@@ -7,9 +7,9 @@ Scripts for building the training data from raw PDB structures.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  STAGE 1-2: Sequence Clustering                          [clustering/]     │
-│  sbatch sbatch_cluster.sh                                                   │
+│  bash cluster.sh <input> <threshold> <mode>                                 │
 │    → mmseqs2 clustering at 30/40/80/90% identity                            │
-│    → builds seqres_simple_clusters.csv                                      │
+│    → then: python build_cluster_csv.py → seqres_simple_clusters.csv         │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       ↓
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -81,8 +81,7 @@ scripts/
 
 | Script | Purpose |
 |--------|---------|
-| `sbatch_cluster.sh` | SLURM wrapper: runs mmseqs2 for all thresholds, then collates |
-| `cluster.sh` | Worker: runs one mmseqs2 easy-cluster call |
+| `cluster.sh` | Runs mmseqs2 easy-cluster for one threshold (usage: `bash cluster.sh <input> <threshold> <mode>`) |
 | `build_cluster_csv.py` | Joins cluster TSVs → `seqres_simple_clusters.csv` |
 | `build_train_val_test_split.py` | Removes val/test cluster30s → `train_seq80_pool_filtered.csv` |
 
@@ -152,29 +151,29 @@ Most scripts have `*_single.py` variants for single-chain data:
 
 ```bash
 # Full pipeline (after raw mmCIFs are ready):
-cd dynamicprot/scripts
+cd src/dynamicmpnn/scripts
 
-# 1-2. Cluster sequences
-sbatch clustering/sbatch_cluster.sh
+# 1-2. Cluster sequences (run for each threshold: 0.3, 0.4, 0.8, 0.9)
+for thresh in 0.3 0.4 0.8 0.9; do
+    bash clustering/cluster.sh seqres $thresh simple
+done
+python clustering/build_cluster_csv.py seqres simple
 
 # 3. Gather sequences per cluster
-sbatch pipeline/slurm_gather_seq80
+python pipeline/gather_sequences_seq80.py
 
 # 4. Process to .pt
-sbatch pipeline/slurm_process_pt_seq80
+python pipeline/process_pt_seq80.py
 
-# 5. Run foldseek (create wrapper referencing foldseek/tm_foldseek.py)
-sbatch your_slurm_foldseek.sh
+# 5. Run foldseek for TM-scores
+python foldseek/tm_foldseek.py
 
-# 6. Add TM scores
-sbatch pipeline/slurm_add_TM_scores_seq80
+# 6. Add TM scores to .pt files
+python pipeline/add_TM_scores_seq80.py
 
 # 7. Build train split
 python clustering/build_train_val_test_split.py
 
 # 8. Build val/test .pts
 python splits/build_val_test_pts.py
-
-# Optional: curriculum precompute
-sbatch splits/slurm_precompute_min_tm.sh
 ```
