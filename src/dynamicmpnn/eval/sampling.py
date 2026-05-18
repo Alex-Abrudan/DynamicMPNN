@@ -27,7 +27,7 @@ class SampleResult:
     featurized_graph: Data
 
 
-def _checkpoint_model_config(checkpoint: dict[object, object]):
+def _checkpoint_config(checkpoint: dict[object, object]):
     hyper_parameters = checkpoint.get("hyper_parameters")
     if not isinstance(hyper_parameters, dict) or "cfg" not in hyper_parameters:
         raise KeyError("Checkpoint is missing hyper_parameters.cfg")
@@ -35,10 +35,17 @@ def _checkpoint_model_config(checkpoint: dict[object, object]):
     cfg = hyper_parameters["cfg"]
     if OmegaConf.is_config(cfg):
         cfg = OmegaConf.to_container(cfg, resolve=False)
-    if not isinstance(cfg, dict) or "model" not in cfg:
-        raise KeyError("Checkpoint cfg is missing model")
+    if not isinstance(cfg, dict):
+        raise KeyError("Checkpoint cfg is not a dict")
 
-    return OmegaConf.create(cfg["model"])
+    return OmegaConf.create(cfg)
+
+
+def _checkpoint_model_config(checkpoint: dict[object, object]):
+    cfg = _checkpoint_config(checkpoint)
+    if "model" not in cfg:
+        raise KeyError("Checkpoint cfg is missing model")
+    return cfg["model"]
 
 
 def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int):
@@ -49,8 +56,9 @@ def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int)
     # Remap old module paths to new ones
     if "_target_" in model_cfg:
         old_target = model_cfg["_target_"]
-        if old_target.startswith("dynamicprot.src."):
+        if old_target.startswith("dynamicprot.src.") or old_target.startswith("dynamicprot_single.src."):
             new_target = old_target.replace("dynamicprot.src.", "dynamicmpnn.")
+            new_target = new_target.replace("dynamicprot_single.src.", "dynamicmpnn.")
             new_target = new_target.replace("AutoregressiveMultiGNNv1", "DynamicMPNN")
             model_cfg["_target_"] = new_target
 
@@ -71,19 +79,19 @@ def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int)
     return model
 
 
-def _create_featuriser(cfg) -> ProteinGraphFeaturiser:
+def _create_featuriser(features_cfg) -> ProteinGraphFeaturiser:
     return ProteinGraphFeaturiser(
-        representation=cfg.features.representation,
-        scalar_node_features=cfg.features.scalar_node_features,
-        vector_node_features=cfg.features.vector_node_features,
-        edge_types=cfg.features.edge_types,
-        scalar_edge_features=cfg.features.scalar_edge_features,
-        vector_edge_features=cfg.features.vector_edge_features,
+        representation=features_cfg.representation,
+        scalar_node_features=features_cfg.scalar_node_features,
+        vector_node_features=features_cfg.vector_node_features,
+        edge_types=features_cfg.edge_types,
+        scalar_edge_features=features_cfg.scalar_edge_features,
+        vector_edge_features=features_cfg.vector_edge_features,
         split="test",
-        noise_scale=cfg.features.noise_scale,
+        noise_scale=features_cfg.noise_scale,
         distance_eps=DISTANCE_EPS,
         device="cpu",
-        pair_tm_tau=getattr(cfg.features, "pair_tm_tau", 0.0),
+        pair_tm_tau=getattr(features_cfg, "pair_tm_tau", 0.0),
     )
 
 
@@ -119,7 +127,10 @@ def load_model_and_sample_batch(
 
 
 def sample_sequences(cfg, bundle: PreparedInputBundle) -> SampleResult:
-    featuriser = _create_featuriser(cfg)
+    checkpoint = torch.load(str(bundle.request.resolved_model_path), map_location="cpu", weights_only=False)
+    ckpt_cfg = _checkpoint_config(checkpoint)
+    features_cfg = ckpt_cfg.get("features", cfg.features)
+    featuriser = _create_featuriser(features_cfg)
     featurized_graph = featuriser(bundle.multi_state_data, pdb_code="evaluation_pair")
     if featurized_graph is None:
         raise ValueError("Featuriser returned None for the resolved evaluation inputs")
