@@ -323,6 +323,7 @@ class DynamicMPNN(torch.nn.Module):
         logit_bias: Optional[torch.Tensor] = None,
         return_logits: Optional[bool] = False,
         refresh_interval: int = 0,
+        forced_seq: Optional[torch.Tensor] = None,
     ):
         """
         Hybrid sampling: run global MP on the pooled graph once (via self.pooled_encoder_layers),
@@ -485,7 +486,12 @@ class DynamicMPNN(torch.nn.Module):
                     lgts = torch.nan_to_num(lgts, nan=-1e4, posinf=1e4, neginf=-1e4)
                 lgts = torch.clamp(lgts, min=-1e4, max=1e4)
 
-                seq[i::num_nodes] = Categorical(logits=lgts / self.temperature).sample()
+                # Test hook: teacher-force the decode so this path can be compared
+                # against sample_v4 without stochastic draws. None => unchanged.
+                if forced_seq is not None:
+                    seq[i::num_nodes] = forced_seq[i].to(torch.int)
+                else:
+                    seq[i::num_nodes] = Categorical(logits=lgts / self.temperature).sample()
                 h_S[i::num_nodes] = self.W_s(seq[i::num_nodes])
                 logits[i::num_nodes] = lgts
 
@@ -886,6 +892,529 @@ class DynamicMPNN(torch.nn.Module):
         )
 
         return h_V_pooled, h_E_pooled, None
+
+    # ------------------------------------------------------------------
+    # Local (CSR) autoregressive decode.
+    #
+    # Numerically equivalent to sample_v3, but each AR step touches only the
+    # in-edges of the residue being decoded instead of the whole expanded edge
+    # set. sample_v3 rebuilds sequence-conditioned features for all S*N*d edges
+    # at every one of the N steps and then discards all but ~d of them, which
+    # makes the decode O(N) more expensive than it needs to be.
+    #
+    # Equivalence relies on four properties of the shipped configuration;
+    # see tests/ for the checks that pin them down:
+    #   1. cache[j][i] is layer (j-1)'s output at node i, not enc[i].
+    #   2. backward edges (src >= dst) take BOTH endpoints from enc.
+    #   3. norm[0] is skipped on the autoregressive path despite norm_first.
+    #   4. messages are summed then divided by the destination's in-degree.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_decoder_csr(edge_index, num_nodes):
+        """Destination-sorted, padded neighbour table for the static decoder graph.
+
+        Returns (order, nbr_src, nbr_eid, valid, degree) where order sorts the
+        edge arrays by destination, and the [N, K] tables give each node's
+        in-edges padded to K = max in-degree.
+        """
+        device = edge_index.device
+        src, dst = edge_index[0], edge_index[1]
+        order = torch.argsort(dst, stable=True)
+        src_sorted = src[order]
+
+        degree = torch.bincount(dst, minlength=num_nodes)
+        max_degree = int(degree.max().item()) if degree.numel() else 0
+        ptr = torch.cat([degree.new_zeros(1), degree.cumsum(0)])
+
+        arange_k = torch.arange(max_degree, device=device)
+        valid = arange_k.unsqueeze(0) < degree.unsqueeze(1)           # [N, K]
+        nbr_eid = ptr[:-1].unsqueeze(1) + arange_k.unsqueeze(0)       # [N, K]
+        nbr_eid = nbr_eid.clamp(max=max(src_sorted.numel() - 1, 0))
+        nbr_src = torch.where(valid, src_sorted[nbr_eid], torch.zeros_like(nbr_eid))
+        return order, nbr_src, nbr_eid, valid, degree
+
+    def _local_decode(self, node_ids, cache, enc, h_S, e_s_sorted, e_v_sorted,
+                      nbr_src, nbr_eid, valid):
+        """Run the decoder stack for `node_ids` and return the last layer's output.
+
+        Shapes: cache[j] is ([S, N, ds], [S, N, dv, 3]); enc is ([N, ds], [N, dv, 3])
+        and is shared across samples because it is never mutated. Returns
+        ([S, M, ds], [S, M, dv, 3]) for the M nodes in `node_ids`.
+
+        The periodic refresh uses `_refresh_decode` instead: it updates a
+        growing set of nodes where most padded neighbour slots would be dead,
+        so a compact edge list beats this padded table there.
+        """
+        n_samples = cache[0][0].shape[0]
+        num_sel = node_ids.shape[0]
+
+        sel_src = nbr_src[node_ids]                                   # [M, K]
+        sel_eid = nbr_eid[node_ids]                                   # [M, K]
+        sel_valid = valid[node_ids]
+        forward = sel_valid & (sel_src < node_ids.unsqueeze(1))       # src < dst
+        degree = sel_valid.sum(dim=1).clamp(min=1)                    # [M]
+        num_nbr = sel_src.shape[1]
+
+        def expand_samples(tensor):
+            return tensor.unsqueeze(0).expand(n_samples, *tensor.shape)
+
+        # Edge features are constant across decoder layers (n_edge_gvps == 0),
+        # so build them once per call rather than once per layer.
+        edge_s = expand_samples(e_s_sorted[sel_eid])                  # [S, M, K, de]
+        edge_v = expand_samples(e_v_sorted[sel_eid])                  # [S, M, K, dve, 3]
+        seq_feat = h_S[:, sel_src] * forward.unsqueeze(0).unsqueeze(-1)
+        edge_s = torch.cat([edge_s, seq_feat], dim=-1)
+
+        fwd_s = forward.unsqueeze(0).unsqueeze(-1)
+        fwd_v = fwd_s.unsqueeze(-1)
+        enc_src_s = expand_samples(enc[0][sel_src])
+        enc_src_v = expand_samples(enc[1][sel_src])
+        enc_dst_s = expand_samples(enc[0][node_ids]).unsqueeze(2).expand(-1, -1, num_nbr, -1)
+        enc_dst_v = expand_samples(enc[1][node_ids]).unsqueeze(2).expand(-1, -1, num_nbr, -1, -1)
+
+        flat_edge = (edge_s.reshape(-1, edge_s.shape[-1]),
+                     edge_v.reshape(-1, *edge_v.shape[-2:]))
+        mask_flat_s = sel_valid.unsqueeze(0).expand(n_samples, -1, -1).reshape(-1, 1)
+        mask_flat_v = mask_flat_s.unsqueeze(-1)
+
+        out = None
+        for layer_idx, layer in enumerate(self.decoder_layers):
+            node_s, node_v = cache[layer_idx]
+
+            src_s = torch.where(fwd_s, node_s[:, sel_src], enc_src_s)
+            src_v = torch.where(fwd_v, node_v[:, sel_src], enc_src_v)
+            dst_cache_s = node_s[:, node_ids].unsqueeze(2).expand(-1, -1, num_nbr, -1)
+            dst_cache_v = node_v[:, node_ids].unsqueeze(2).expand(-1, -1, num_nbr, -1, -1)
+            dst_s = torch.where(fwd_s, dst_cache_s, enc_dst_s)
+            dst_v = torch.where(fwd_v, dst_cache_v, enc_dst_v)
+
+            # GVP assumes 2-D scalars / 3-D vectors, so flatten S*M*K into rows.
+            message = layer.conv.message_func((
+                torch.cat([src_s.reshape(-1, src_s.shape[-1]),
+                           flat_edge[0],
+                           dst_s.reshape(-1, dst_s.shape[-1])], dim=-1),
+                torch.cat([src_v.reshape(-1, *src_v.shape[-2:]),
+                           flat_edge[1],
+                           dst_v.reshape(-1, *dst_v.shape[-2:])], dim=-2),
+            ))
+
+            msg_s = (message[0] * mask_flat_s).view(n_samples, num_sel, num_nbr, -1)
+            msg_v = (message[1] * mask_flat_v).view(n_samples, num_sel, num_nbr,
+                                                    *message[1].shape[-2:])
+            delta_s = msg_s.sum(dim=2) / degree.view(1, -1, 1)
+            delta_v = msg_v.sum(dim=2) / degree.view(1, -1, 1, 1)
+
+            base_s = node_s[:, node_ids]
+            base_v = node_v[:, node_ids]
+            hid = (base_s + delta_s, base_v + delta_v)
+
+            flat_hid = (hid[0].reshape(-1, hid[0].shape[-1]),
+                        hid[1].reshape(-1, *hid[1].shape[-2:]))
+            ff_out = layer.ff_func(layer.norm[1](flat_hid))
+            out = (hid[0] + ff_out[0].view_as(hid[0]),
+                   hid[1] + ff_out[1].view_as(hid[1]))
+
+            if layer_idx < len(self.decoder_layers) - 1:
+                cache[layer_idx + 1][0][:, node_ids] = out[0]
+                cache[layer_idx + 1][1][:, node_ids] = out[1]
+
+        return out
+
+    def _refresh_decode(self, nodes, selected, cache, enc, h_S, e_s_sorted, e_v_sorted,
+                        src_sorted, dst_sorted):
+        """Periodic staleness refresh over all already-decoded nodes.
+
+        `nodes` are the node ids to update and `selected` indexes the edges that
+        participate; callers compute both, which lets the single-graph and the
+        cross-target batched decoders share this routine.
+
+        Uses a compact edge list rather than the padded [M, K] neighbour table:
+        during a refresh M grows with the step index while most padded slots are
+        invalid (in-degree varies ~39 mean vs ~65 max, and `src <= limit` masks
+        out most of the rest), so padding wastes a large fraction of the work.
+
+        Matches sample_v3's refresh semantics: only edges with BOTH endpoints
+        already decoded participate, which is a different edge set from the
+        per-residue step.
+        """
+        n_samples, num_nodes = cache[0][0].shape[0], cache[0][0].shape[1]
+
+        if selected.numel() == 0:
+            return  # sample_v3 skips the refresh entirely when no such edges exist
+
+        src = src_sorted[selected]
+        dst = dst_sorted[selected]
+        forward = src < dst
+
+        degree = torch.zeros(num_nodes, device=src.device, dtype=cache[0][0].dtype)
+        degree.index_add_(0, dst, torch.ones_like(dst, dtype=degree.dtype))
+        degree = degree.clamp(min=1)
+
+        def expand_samples(tensor):
+            return tensor.unsqueeze(0).expand(n_samples, *tensor.shape)
+
+        edge_s = torch.cat([
+            expand_samples(e_s_sorted[selected]),
+            h_S[:, src] * forward.view(1, -1, 1),
+        ], dim=-1)
+        edge_v = expand_samples(e_v_sorted[selected])
+        flat_edge_s = edge_s.reshape(-1, edge_s.shape[-1])
+        flat_edge_v = edge_v.reshape(-1, *edge_v.shape[-2:])
+
+        fwd_s = forward.view(1, -1, 1)
+        fwd_v = fwd_s.unsqueeze(-1)
+        enc_src_s, enc_src_v = expand_samples(enc[0][src]), expand_samples(enc[1][src])
+        enc_dst_s, enc_dst_v = expand_samples(enc[0][dst]), expand_samples(enc[1][dst])
+
+        for layer_idx, layer in enumerate(self.decoder_layers):
+            node_s, node_v = cache[layer_idx]
+
+            src_s = torch.where(fwd_s, node_s[:, src], enc_src_s)
+            src_v = torch.where(fwd_v, node_v[:, src], enc_src_v)
+            dst_s = torch.where(fwd_s, node_s[:, dst], enc_dst_s)
+            dst_v = torch.where(fwd_v, node_v[:, dst], enc_dst_v)
+
+            message = layer.conv.message_func((
+                torch.cat([src_s.reshape(-1, src_s.shape[-1]), flat_edge_s,
+                           dst_s.reshape(-1, dst_s.shape[-1])], dim=-1),
+                torch.cat([src_v.reshape(-1, *src_v.shape[-2:]), flat_edge_v,
+                           dst_v.reshape(-1, *dst_v.shape[-2:])], dim=-2),
+            ))
+
+            msg_s = message[0].view(n_samples, -1, message[0].shape[-1])
+            msg_v = message[1].view(n_samples, -1, *message[1].shape[-2:])
+
+            delta_s = torch.zeros(n_samples, num_nodes, msg_s.shape[-1],
+                                  device=msg_s.device, dtype=msg_s.dtype)
+            delta_v = torch.zeros(n_samples, num_nodes, *msg_v.shape[-2:],
+                                  device=msg_v.device, dtype=msg_v.dtype)
+            delta_s.index_add_(1, dst, msg_s)
+            delta_v.index_add_(1, dst, msg_v)
+            delta_s = delta_s / degree.view(1, -1, 1)
+            delta_v = delta_v / degree.view(1, -1, 1, 1)
+
+            hid = (node_s[:, nodes] + delta_s[:, nodes],
+                   node_v[:, nodes] + delta_v[:, nodes])
+            flat_hid = (hid[0].reshape(-1, hid[0].shape[-1]),
+                        hid[1].reshape(-1, *hid[1].shape[-2:]))
+            ff_out = layer.ff_func(layer.norm[1](flat_hid))
+            out = (hid[0] + ff_out[0].view_as(hid[0]),
+                   hid[1] + ff_out[1].view_as(hid[1]))
+
+            if layer_idx < len(self.decoder_layers) - 1:
+                cache[layer_idx + 1][0][:, nodes] = out[0]
+                cache[layer_idx + 1][1][:, nodes] = out[1]
+
+    @torch.no_grad()
+    def sample_v4(
+        self,
+        batch,
+        logit_bias: Optional[torch.Tensor] = None,
+        return_logits: Optional[bool] = False,
+        refresh_interval: int = 0,
+        forced_seq: Optional[torch.Tensor] = None,
+    ):
+        """Local-neighbourhood equivalent of sample_v3.
+
+        Identical arithmetic, but the per-residue step works on that residue's
+        in-edges (~d) rather than the full expanded edge set (S*N*d).
+
+        `forced_seq` ([num_nodes] of amino-acid indices) teacher-forces the
+        decode instead of sampling, which is how equivalence against sample_v3
+        is checked without stochastic draws getting in the way.
+        """
+        device = batch.edge_index.device
+
+        h_V = (batch.node_s, batch.node_v)
+        h_E = (batch.edge_s, batch.edge_v)
+        edge_index = batch.edge_index
+
+        original_indices = torch.arange(batch.seq.shape[0], device=device)
+
+        h_V = self.W_v(h_V)
+        h_E = self.W_e(h_E)
+
+        for layer in self.encoder_layers:
+            h_V, h_E = layer(h_V, edge_index, h_E)
+
+        decoder_edge_idx_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.decoder_edge_idx_length, dim=0)
+        ])
+        decoder_edge_feat_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.decoder_edge_feat_length, dim=0)
+        ])
+        decoder_node_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.num_decoder_nodes, dim=0)
+        ])
+
+        all_objects_h_V = list(zip(
+            split_batch(h_V[0], batch.batch),
+            split_batch(h_V[1], batch.batch)
+        ))
+
+        all_sampled_seqs = []
+        all_logits = []
+        all_pooled_indices = []
+
+        for batch_idx, h_V_batch in enumerate(all_objects_h_V):
+            sample_decoder_edge_index_GLOBAL = batch.decoder_edge_index[
+                :, decoder_edge_idx_ptr[batch_idx]:decoder_edge_idx_ptr[batch_idx + 1]]
+            offset_for_this_graph = decoder_node_ptr[batch_idx]
+            edge_index_decoder = sample_decoder_edge_index_GLOBAL - offset_for_this_graph
+
+            sample_decoder_edge_s = batch.decoder_edge_s[
+                decoder_edge_feat_ptr[batch_idx]:decoder_edge_feat_ptr[batch_idx + 1]]
+            sample_decoder_edge_v = batch.decoder_edge_v[
+                decoder_edge_feat_ptr[batch_idx]:decoder_edge_feat_ptr[batch_idx + 1]]
+            sample_edge_mask = batch.decoder_edge_mask[
+                decoder_edge_feat_ptr[batch_idx]:decoder_edge_feat_ptr[batch_idx + 1]]
+            original_indices_graph = original_indices[
+                decoder_node_ptr[batch_idx]:decoder_node_ptr[batch_idx + 1]]
+
+            h_V_pooled, h_E_pooled, edge_index_decoder, original_indices_pooled = self.pool_for_sampling(
+                h_V_=h_V_batch,
+                h_E_=(self.W_e((sample_decoder_edge_s, sample_decoder_edge_v))),
+                edge_index_local=edge_index_decoder,
+                homomer_index=batch.homo_idx[batch.batch == batch_idx],
+                virtual_mask=batch.virtual_mask[batch.batch == batch_idx],
+                decoder_edge_mask=sample_edge_mask,
+                n_edges=batch.decoder_edge_idx_length[batch_idx].item(),
+                original_indices=original_indices_graph,
+            )
+
+            all_pooled_indices.append(original_indices_pooled)
+            num_nodes = h_V_pooled[0].shape[0]
+
+            for layer in self.pooled_encoder_layers:
+                h_V_pooled, h_E_pooled = layer(h_V_pooled, edge_index_decoder, h_E_pooled)
+
+            # Static topology: build the destination-sorted neighbour table once.
+            order, nbr_src, nbr_eid, valid, _degree = self._build_decoder_csr(
+                edge_index_decoder, num_nodes)
+            e_s_sorted = h_E_pooled[0][order]
+            e_v_sorted = h_E_pooled[1][order]
+            src_sorted = edge_index_decoder[0][order]
+            dst_sorted = edge_index_decoder[1][order]
+
+            # enc is shared across samples because it is never mutated.
+            enc = (h_V_pooled[0], h_V_pooled[1])
+            model_dtype = h_V_pooled[0].dtype
+            n_samples = self.n_samples
+
+            cache = [
+                (enc[0].unsqueeze(0).repeat(n_samples, 1, 1),
+                 enc[1].unsqueeze(0).repeat(n_samples, 1, 1, 1))
+                for _ in self.decoder_layers
+            ]
+            seq = torch.zeros(n_samples, num_nodes, device=device, dtype=torch.int)
+            h_S = torch.zeros(n_samples, num_nodes, self.out_dim,
+                              device=device, dtype=model_dtype)
+            logits = torch.zeros(n_samples, num_nodes, self.out_dim,
+                                 device=device, dtype=model_dtype)
+
+            for i in range(num_nodes):
+                node_ids = torch.tensor([i], device=device, dtype=torch.long)
+                out = self._local_decode(node_ids, cache, enc, h_S,
+                                         e_s_sorted, e_v_sorted,
+                                         nbr_src, nbr_eid, valid)
+
+                lgts = self.W_out((out[0][:, 0], out[1][:, 0]))
+                if logit_bias is not None:
+                    lgts = lgts + logit_bias[i]
+
+                if lgts.dtype in [torch.float16, torch.bfloat16]:
+                    lgts = torch.nan_to_num(lgts, nan=-1e4, posinf=1e4, neginf=-1e4)
+                lgts = torch.clamp(lgts, min=-1e4, max=1e4)
+
+                if forced_seq is not None:
+                    drawn = forced_seq[i].to(torch.int).expand(n_samples)
+                else:
+                    drawn = Categorical(logits=lgts / self.temperature).sample()
+                seq[:, i] = drawn
+                h_S[:, i] = self.W_s(drawn.long())
+                logits[:, i] = lgts
+
+                if refresh_interval > 0 and i > 0 and (i + 1) % refresh_interval == 0:
+                    # Only edges with BOTH endpoints already decoded participate.
+                    selected = ((src_sorted <= i) & (dst_sorted <= i)).nonzero(as_tuple=True)[0]
+                    self._refresh_decode(torch.arange(i + 1, device=device), selected,
+                                         cache, enc, h_S, e_s_sorted, e_v_sorted,
+                                         src_sorted, dst_sorted)
+
+            all_sampled_seqs.append(seq)
+            if return_logits:
+                all_logits.append(logits)
+
+        final_seqs = torch.cat(all_sampled_seqs, dim=1)
+        final_indices = torch.cat(all_pooled_indices, dim=0)
+        batch_indices = torch.cat([
+            torch.full((len(idx),), i, device=device, dtype=torch.long)
+            for i, idx in enumerate(all_pooled_indices)
+        ], dim=0)
+
+        if return_logits:
+            return final_seqs, torch.cat(all_logits, dim=1), final_indices, batch_indices
+        return final_seqs
+
+    @torch.no_grad()
+    def sample_batched(
+        self,
+        batch,
+        return_logits: Optional[bool] = False,
+        refresh_interval: int = 0,
+        forced_seq: Optional[torch.Tensor] = None,
+    ):
+        """Decode every graph in the batch in lockstep.
+
+        sample_v3/v4 decode graphs one after another. Because the decode is
+        bound by per-step dispatch overhead rather than arithmetic, advancing all
+        graphs together costs barely more per step than advancing one, so this
+        is close to a free throughput multiplier for screening many targets.
+
+        Graphs are concatenated into a single node space with per-graph offsets
+        (no padding), so step i decodes node `offset_b + i` for every graph still
+        running. Graphs shorter than the longest simply drop out of `active`.
+
+        Returns per-graph sequences as a list, since lengths differ. Draw ORDER
+        differs from the per-target decoders, so sampled sequences will differ
+        run-to-run even though the distribution is identical; use forced_seq to
+        compare logits exactly.
+        """
+        device = batch.edge_index.device
+
+        h_V = self.W_v((batch.node_s, batch.node_v))
+        h_E = self.W_e((batch.edge_s, batch.edge_v))
+        for layer in self.encoder_layers:
+            h_V, h_E = layer(h_V, batch.edge_index, h_E)
+
+        original_indices = torch.arange(batch.seq.shape[0], device=device)
+        decoder_edge_idx_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.decoder_edge_idx_length, dim=0)])
+        decoder_edge_feat_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.decoder_edge_feat_length, dim=0)])
+        decoder_node_ptr = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=device),
+            torch.cumsum(batch.num_decoder_nodes, dim=0)])
+
+        all_objects_h_V = list(zip(split_batch(h_V[0], batch.batch),
+                                   split_batch(h_V[1], batch.batch)))
+
+        # --- per-graph encode + pool (cheap: once per target, not per step) ---
+        enc_s_parts, enc_v_parts = [], []
+        edge_parts, e_s_parts, e_v_parts = [], [], []
+        sizes, pooled_indices = [], []
+        node_offset = 0
+
+        for batch_idx, h_V_batch in enumerate(all_objects_h_V):
+            edge_index_decoder = (
+                batch.decoder_edge_index[:, decoder_edge_idx_ptr[batch_idx]:
+                                            decoder_edge_idx_ptr[batch_idx + 1]]
+                - decoder_node_ptr[batch_idx])
+            feat_slice = slice(decoder_edge_feat_ptr[batch_idx],
+                               decoder_edge_feat_ptr[batch_idx + 1])
+
+            h_V_pooled, h_E_pooled, edge_index_decoder, original_indices_pooled = \
+                self.pool_for_sampling(
+                    h_V_=h_V_batch,
+                    h_E_=(self.W_e((batch.decoder_edge_s[feat_slice],
+                                    batch.decoder_edge_v[feat_slice]))),
+                    edge_index_local=edge_index_decoder,
+                    homomer_index=batch.homo_idx[batch.batch == batch_idx],
+                    virtual_mask=batch.virtual_mask[batch.batch == batch_idx],
+                    decoder_edge_mask=batch.decoder_edge_mask[feat_slice],
+                    n_edges=batch.decoder_edge_idx_length[batch_idx].item(),
+                    original_indices=original_indices[
+                        decoder_node_ptr[batch_idx]:decoder_node_ptr[batch_idx + 1]],
+                )
+
+            for layer in self.pooled_encoder_layers:
+                h_V_pooled, h_E_pooled = layer(h_V_pooled, edge_index_decoder, h_E_pooled)
+
+            num_nodes = h_V_pooled[0].shape[0]
+            enc_s_parts.append(h_V_pooled[0])
+            enc_v_parts.append(h_V_pooled[1])
+            edge_parts.append(edge_index_decoder + node_offset)
+            e_s_parts.append(h_E_pooled[0])
+            e_v_parts.append(h_E_pooled[1])
+            sizes.append(num_nodes)
+            pooled_indices.append(original_indices_pooled)
+            node_offset += num_nodes
+
+        # --- fuse into one global graph ---
+        enc = (torch.cat(enc_s_parts, dim=0), torch.cat(enc_v_parts, dim=0))
+        edge_index_global = torch.cat(edge_parts, dim=1)
+        total_nodes = node_offset
+
+        order, nbr_src, nbr_eid, valid, _deg = self._build_decoder_csr(
+            edge_index_global, total_nodes)
+        e_s_sorted = torch.cat(e_s_parts, dim=0)[order]
+        e_v_sorted = torch.cat(e_v_parts, dim=0)[order]
+        src_sorted = edge_index_global[0][order]
+        dst_sorted = edge_index_global[1][order]
+
+        sizes_t = torch.tensor(sizes, device=device)
+        offsets_t = torch.cat([torch.zeros(1, dtype=torch.long, device=device),
+                               torch.cumsum(sizes_t, dim=0)[:-1]])
+        local_index = torch.cat([torch.arange(n, device=device) for n in sizes])
+        graph_of = torch.cat([torch.full((n,), b, device=device, dtype=torch.long)
+                              for b, n in enumerate(sizes)])
+
+        n_samples = self.n_samples
+        model_dtype = enc[0].dtype
+        cache = [(enc[0].unsqueeze(0).repeat(n_samples, 1, 1),
+                  enc[1].unsqueeze(0).repeat(n_samples, 1, 1, 1))
+                 for _ in self.decoder_layers]
+        seq = torch.zeros(n_samples, total_nodes, device=device, dtype=torch.int)
+        h_S = torch.zeros(n_samples, total_nodes, self.out_dim,
+                          device=device, dtype=model_dtype)
+        logits = torch.zeros(n_samples, total_nodes, self.out_dim,
+                             device=device, dtype=model_dtype)
+
+        for i in range(max(sizes)):
+            active = (sizes_t > i).nonzero(as_tuple=True)[0]
+            node_ids = offsets_t[active] + i
+
+            out = self._local_decode(node_ids, cache, enc, h_S,
+                                     e_s_sorted, e_v_sorted, nbr_src, nbr_eid, valid)
+
+            lgts = self.W_out((out[0].reshape(-1, out[0].shape[-1]),
+                               out[1].reshape(-1, *out[1].shape[-2:])))
+            lgts = lgts.view(n_samples, node_ids.shape[0], self.out_dim)
+            if lgts.dtype in [torch.float16, torch.bfloat16]:
+                lgts = torch.nan_to_num(lgts, nan=-1e4, posinf=1e4, neginf=-1e4)
+            lgts = torch.clamp(lgts, min=-1e4, max=1e4)
+
+            if forced_seq is not None:
+                drawn = forced_seq[node_ids].to(torch.int).unsqueeze(0).expand(
+                    n_samples, -1)
+            else:
+                drawn = Categorical(logits=lgts / self.temperature).sample()
+            seq[:, node_ids] = drawn.to(torch.int)
+            h_S[:, node_ids] = self.W_s(drawn.long())
+            logits[:, node_ids] = lgts
+
+            if refresh_interval > 0 and i > 0 and (i + 1) % refresh_interval == 0:
+                # A graph that has finished must stop refreshing, so that each
+                # graph's refresh history matches its standalone decode exactly.
+                node_ok = (local_index <= i) & (sizes_t[graph_of] > i)
+                selected = (node_ok[src_sorted] & node_ok[dst_sorted]).nonzero(
+                    as_tuple=True)[0]
+                self._refresh_decode(node_ok.nonzero(as_tuple=True)[0], selected,
+                                     cache, enc, h_S, e_s_sorted, e_v_sorted,
+                                     src_sorted, dst_sorted)
+
+        sequences = [seq[:, offsets_t[b]:offsets_t[b] + sizes[b]] for b in range(len(sizes))]
+        if return_logits:
+            per_graph_logits = [logits[:, offsets_t[b]:offsets_t[b] + sizes[b]]
+                                for b in range(len(sizes))]
+            return sequences, per_graph_logits, pooled_indices
+        return sequences
 
 def split_batch(x, batch):
     """Split tensor x according to batch indices."""
