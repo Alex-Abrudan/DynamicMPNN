@@ -57,12 +57,28 @@ def _sequence_similarity(seq1: str, seq2: str) -> float:
     score_matrix[:, 0] = np.arange(rows) * gap_penalty
     score_matrix[0, :] = np.arange(cols) * gap_penalty
 
+    # Vectorised Needleman-Wunsch, producing a bit-identical score matrix to the
+    # scalar double loop it replaces (this feeds a threshold comparison, so it
+    # must stay exact). The match/delete terms only depend on the previous row,
+    # so they vectorise directly. The insert term depends on score[i, j-1] in the
+    # SAME row, which unrolls to a running maximum:
+    #     score[i,j] = max_{k<=j} ( temp[k] + (j-k)*gap )
+    #                = max_{k<=j} ( temp[k] - k*gap ) + j*gap
+    # turning each row from `cols` interpreted iterations into a few array ops.
+    codes1 = np.frombuffer(seq1.encode("ascii", "replace"), dtype=np.uint8)
+    codes2 = np.frombuffer(seq2.encode("ascii", "replace"), dtype=np.uint8)
+    gap_ramp = (np.arange(cols, dtype=np.int32) * gap_penalty)
+
     for i in range(1, rows):
-        for j in range(1, cols):
-            match = score_matrix[i - 1, j - 1] + (match_score if seq1[i - 1] == seq2[j - 1] else mismatch_score)
-            delete = score_matrix[i - 1, j] + gap_penalty
-            insert = score_matrix[i, j - 1] + gap_penalty
-            score_matrix[i, j] = max(match, delete, insert)
+        temp = np.empty(cols, dtype=np.int32)
+        temp[0] = score_matrix[i, 0]
+        if cols > 1:
+            substitution = np.where(codes1[i - 1] == codes2, match_score, mismatch_score)
+            temp[1:] = np.maximum(
+                score_matrix[i - 1, :-1] + substitution.astype(np.int32),
+                score_matrix[i - 1, 1:] + gap_penalty,
+            )
+        score_matrix[i] = np.maximum.accumulate(temp - gap_ramp) + gap_ramp
 
     aligned1: list[str] = []
     aligned2: list[str] = []

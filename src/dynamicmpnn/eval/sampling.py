@@ -48,8 +48,12 @@ def _checkpoint_model_config(checkpoint: dict[object, object]):
     return cfg["model"]
 
 
-def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int):
-    checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+def _load_model_for_sampling(checkpoint_path: str | Path, cfg, num_samples: int,
+                             checkpoint: dict | None = None):
+    # Callers that have already read the checkpoint can pass it in; it is tens of
+    # MB and was previously loaded twice per run.
+    if checkpoint is None:
+        checkpoint = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
     model_cfg = _checkpoint_model_config(checkpoint)
     OmegaConf.set_struct(model_cfg, False)
 
@@ -102,11 +106,9 @@ def resolve_device(device_name: str) -> torch.device:
 
 
 def decode_samples(sample_tensor: torch.Tensor) -> tuple[str, ...]:
-    sequences = []
-    for sample in sample_tensor:
-        sequence = "".join(BASE_AMINO_ACIDS[int(index)] for index in sample.cpu().tolist())
-        sequences.append(sequence)
-    return tuple(sequences)
+    # One device->host transfer for the whole tensor rather than one per sample.
+    rows = sample_tensor.cpu().tolist()
+    return tuple("".join(BASE_AMINO_ACIDS[int(index)] for index in row) for row in rows)
 
 
 def load_model_and_sample_batch(
@@ -115,14 +117,17 @@ def load_model_and_sample_batch(
     batch: Data,
     num_samples: int,
     device: str = "auto",
+    checkpoint: dict | None = None,
 ) -> tuple[str, ...]:
     torch_device = resolve_device(device)
-    model = _load_model_for_sampling(checkpoint_path, cfg, num_samples)
+    model = _load_model_for_sampling(checkpoint_path, cfg, num_samples, checkpoint)
     model = model.to(torch_device)
 
     batch = batch.to(torch_device)
     with torch.inference_mode():
-        sample_tensor, _, _, _ = model.sample(batch, return_logits=True)
+        # The logits were requested and then discarded, which cost a
+        # [n_samples, nodes, 20] write at every autoregressive step.
+        sample_tensor = model.sample(batch, return_logits=False)
     return decode_samples(sample_tensor)
 
 
@@ -142,6 +147,7 @@ def sample_sequences(cfg, bundle: PreparedInputBundle) -> SampleResult:
         batch=batch,
         num_samples=bundle.request.num_samples,
         device=bundle.request.device,
+        checkpoint=checkpoint,
     )
     samples = tuple(
         SampleRecord(sequence_id=f"sample_{sample_idx:03d}", sequence=sequence)
