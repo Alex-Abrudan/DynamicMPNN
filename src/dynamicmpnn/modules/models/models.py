@@ -314,10 +314,16 @@ class DynamicMPNN(torch.nn.Module):
         if self.pooling_strategy == 'single_chain_k':
             return self.sample_single_chain(batch, return_logits=return_logits)
 
-        # logit_bias is indexed per residue position and has no obvious meaning
-        # across graphs of differing length, so that case keeps the per-graph
-        # reference path.
-        if logit_bias is not None:
+        # Two cases keep the per-graph reference path:
+        #
+        #  * logit_bias is indexed per residue position and has no obvious
+        #    meaning across graphs of differing length.
+        #  * n_edge_gvps > 0 makes the decoder layers update edge features at
+        #    every layer. The fast decoders call layer.conv.message_func
+        #    directly rather than going through GVPConvLayer.forward, so they
+        #    never run edge_message_func and would silently use stale edge
+        #    features. See _decoder_updates_edge_features.
+        if logit_bias is not None or self._decoder_updates_edge_features():
             return self.sample_v3(batch, logit_bias=logit_bias,
                                   return_logits=return_logits,
                                   refresh_interval=self.refresh_interval)
@@ -943,6 +949,23 @@ class DynamicMPNN(torch.nn.Module):
     #   4. messages are summed then divided by the destination's in-degree.
     # ------------------------------------------------------------------
 
+    def _decoder_updates_edge_features(self) -> bool:
+        """Do the decoder layers rewrite edge features as they go?
+
+        `GVPConvLayer.forward` updates `edge_attr` through `edge_message_func`
+        before convolving, but only when the layer was built with
+        `n_edge_gvps > 0`. The fast decoders below deliberately skip
+        `GVPConvLayer.forward` and call `layer.conv.message_func` directly, so
+        they build edge features once per step and reuse them across layers.
+
+        That is exact when `n_edge_gvps == 0` -- which is how every shipped
+        checkpoint is configured -- and silently wrong otherwise, since the
+        per-layer edge updates would simply never happen. Callers use this to
+        fall back to `sample_v3`, which goes through the full layer.
+        """
+        return any(getattr(layer, "edge_message_func", None) is not None
+                   for layer in self.decoder_layers)
+
     @staticmethod
     def _build_decoder_csr(edge_index, num_nodes):
         """Destination-sorted, padded neighbour table for the static decoder graph.
@@ -1170,7 +1193,20 @@ class DynamicMPNN(torch.nn.Module):
 
         `forced_seq` teacher-forces the decode, which is how equivalence is
         checked without stochastic draws in the way.
+
+        Requires `n_edge_gvps == 0`; see `_decoder_updates_edge_features`.
+        `sample()` falls back to `sample_v3` in that case, but this raises for
+        callers that reach it directly rather than returning wrong numbers.
         """
+        if self._decoder_updates_edge_features():
+            raise NotImplementedError(
+                "sample_batched does not implement the per-layer edge-feature "
+                "update that n_edge_gvps > 0 enables: it builds edge features "
+                "once per step and reuses them across decoder layers, which is "
+                "exact only when the layers leave edge features untouched. Use "
+                "sample_v3 for this model, or implement the edge-update path."
+            )
+
         device = batch.edge_index.device
 
         h_V = self.W_v((batch.node_s, batch.node_v))
