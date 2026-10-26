@@ -1296,8 +1296,12 @@ class DynamicMPNN(torch.nn.Module):
         seq = torch.zeros(n_samples, total_nodes, device=device, dtype=torch.int)
         h_S = torch.zeros(n_samples, total_nodes, self.out_dim,
                           device=device, dtype=model_dtype)
-        logits = torch.zeros(n_samples, total_nodes, self.out_dim,
-                             device=device, dtype=model_dtype)
+        # Only materialise the logit buffer when it will actually be returned.
+        # Allocating it unconditionally, and writing it at every step, is work
+        # the common path (return_logits=False) never uses.
+        logits = (torch.zeros(n_samples, total_nodes, self.out_dim,
+                              device=device, dtype=model_dtype)
+                  if return_logits else None)
 
         for i in range(max(sizes)):
             active = (sizes_t > i).nonzero(as_tuple=True)[0]
@@ -1320,7 +1324,8 @@ class DynamicMPNN(torch.nn.Module):
                 drawn = Categorical(logits=lgts / self.temperature).sample()
             seq[:, node_ids] = drawn.to(torch.int)
             h_S[:, node_ids] = self.W_s(drawn.long())
-            logits[:, node_ids] = lgts
+            if logits is not None:
+                logits[:, node_ids] = lgts
 
             if refresh_interval > 0 and i > 0 and (i + 1) % refresh_interval == 0:
                 # A graph that has finished must stop refreshing, so that each
