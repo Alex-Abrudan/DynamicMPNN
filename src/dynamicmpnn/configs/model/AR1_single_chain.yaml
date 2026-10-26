@@ -1,3 +1,30 @@
+# Single-chain model config: encodes k cluster chains WITHOUT binding partners,
+# used for the k > 2 ablations described in Sec. 2.2.2 of the paper.
+#
+# NOTE: this is a TRAINING config and it does NOT describe the shipped
+# checkpoints/single_chain_k{2,3,5}.ckpt, which predate it. Those store:
+#
+#     node_in_dim [26, 2]   edge_in_dim [17, 1]
+#     num_layers 4          -> 4 encoder and 4 decoder layers
+#     n_pooled_encoder_layers 0
+#     features.representation 'ca'   (this config group uses 'ca_bb')
+#     no pooling_strategy key at all
+#
+# Inference reads hyperparameters from the checkpoint, not from here, so the
+# difference does not affect loading them. The values below are the intended
+# current design and are deliberately NOT reverted to match the older
+# checkpoints: this config trains new models, and matching it to the old ones
+# would mean anyone retraining reproduces the older architecture.
+#
+# Because the checkpoints store no pooling_strategy, they load with the
+# constructor default 'all_chains_equal' rather than 'single_chain_k'. That is
+# worth knowing but is NOT a defect to "fix": measured over 16 benchmark
+# targets they recover 33.9% (k=2), 37.1% (k=3) and 37.5% (k=5) against 41.9%
+# for the multi-chain model and 5% for chance -- i.e. the moderate drop Table 3
+# of the paper reports. Forcing pooling_strategy=single_chain_k instead raises
+# inside the model, because the evaluation pipeline builds two-state pair
+# graphs rather than k single chains. The default path is the working one.
+
 _target_: dynamicmpnn.modules.models.models.DynamicMPNN
 
 node_in_dim: [27, 2] # Input dimensions for node features (scalar channels, vector channels)
