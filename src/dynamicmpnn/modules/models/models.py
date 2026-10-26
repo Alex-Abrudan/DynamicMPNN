@@ -322,8 +322,17 @@ class DynamicMPNN(torch.nn.Module):
                                   return_logits=return_logits,
                                   refresh_interval=self.refresh_interval)
 
-        # sample_batched reproduces sample_v3 byte-for-byte (verified on all 96
-        # benchmark targets) and is ~1.9x faster on one graph, more on several.
+        # For a SINGLE graph -- which is what the evaluation pipeline passes --
+        # sample_batched reproduces sample_v3's sampled sequences byte-for-byte,
+        # verified on all 96 benchmark targets, and is ~1.9x faster.
+        #
+        # For a batch of SEVERAL graphs it is numerically equivalent but NOT
+        # byte-identical: draws interleave across graphs, so the RNG is consumed
+        # in a different order than decoding them one at a time. The
+        # distribution is unchanged; the particular seeded sequences are not.
+        # Call sample_v3 directly if byte-identical multi-graph reproduction of
+        # an earlier run matters.
+        #
         # Re-assemble its per-graph lists into sample_v3's return contract.
         result = self.sample_batched(batch, return_logits=return_logits,
                                      refresh_interval=self.refresh_interval)
@@ -1140,8 +1149,8 @@ class DynamicMPNN(torch.nn.Module):
     ):
         """Decode every graph in the batch in lockstep.
 
-        sample_v3/v4 decode graphs one after another. Because the decode is
-        bound by per-step dispatch overhead rather than arithmetic, advancing all
+        sample_v3 decodes graphs one after another. Because the decode is bound
+        by per-step dispatch overhead rather than arithmetic, advancing all
         graphs together costs barely more per step than advancing one, so this
         is close to a free throughput multiplier for screening many targets.
 
@@ -1149,10 +1158,18 @@ class DynamicMPNN(torch.nn.Module):
         (no padding), so step i decodes node `offset_b + i` for every graph still
         running. Graphs shorter than the longest simply drop out of `active`.
 
-        Returns per-graph sequences as a list, since lengths differ. Draw ORDER
-        differs from the per-target decoders, so sampled sequences will differ
-        run-to-run even though the distribution is identical; use forced_seq to
-        compare logits exactly.
+        Returns per-graph sequences as a list, since lengths differ.
+
+        Reproducibility:
+          * ONE graph  -- sampled sequences are byte-identical to sample_v3,
+            measured on all 96 benchmark targets.
+          * SEVERAL graphs -- numerically equivalent but not byte-identical:
+            draws interleave across graphs, so the RNG is consumed in a
+            different order than decoding them separately. The distribution is
+            unchanged; the particular seeded sequences are not.
+
+        `forced_seq` teacher-forces the decode, which is how equivalence is
+        checked without stochastic draws in the way.
         """
         device = batch.edge_index.device
 
