@@ -7,10 +7,12 @@ from typing import Any, Optional, Sequence
 import numpy as np
 from Bio.PDB.Polypeptide import is_aa
 
+from dynamicmpnn.eval.af2ig import AF2IGRunResult
 from dynamicmpnn.eval.af3 import AF3RunResult
+from dynamicmpnn.eval.guesses import GuessArtifact
 from dynamicmpnn.eval.structure_utils import get_chain, get_single_model, iter_protein_chain_ids
 from dynamicmpnn.eval.templates import TemplateArtifact
-from dynamicmpnn.eval.types import AF3JobSpec, AF3ProteinSpec, RawMetricRecord
+from dynamicmpnn.eval.types import AF2IGJobSpec, AF3JobSpec, AF3ProteinSpec, RawMetricRecord
 
 
 def _is_protein_residue(residue) -> bool:
@@ -289,5 +291,101 @@ def score_jobs(
                     ranking_score=ranking_score,
                 )
             )
+
+    return tuple(records)
+
+
+def score_af2ig_jobs(
+    jobs: Sequence[AF2IGJobSpec],
+    guesses: dict[tuple[str, str], GuessArtifact],
+    run_results: dict[str, AF2IGRunResult],
+) -> tuple[RawMetricRecord, ...]:
+    """Score AF2 initial-guess predictions into the AF3 record type.
+
+    The reference is the structure the prediction was seeded on, selected
+    through the same index mapping the AF3 path uses, so target and decoy
+    rows mean the same thing in both metrics and the decoy-normalised columns
+    downstream are computed identically. One prediction per job, so `seed`
+    and `af3_sample` stay unset where AF3 enumerates diffusion samples.
+    """
+    records = []
+    for job in jobs:
+        run_result = run_results[job.job_name]
+        if run_result.status != "completed":
+            records.append(
+                RawMetricRecord(
+                    sequence_id=job.sequence_id,
+                    state_name=job.state_name,
+                    structure_kind=job.structure_kind,
+                    af3_status=run_result.status,
+                    error=run_result.error,
+                )
+            )
+            continue
+
+        guess = guesses[(job.state_name, job.structure_kind)]
+        reference_ca = np.asarray(guess.ca_coords, dtype=np.float64)
+        query_indices = np.asarray(job.query_indices, dtype=np.int64)
+        template_indices = np.asarray(job.template_indices, dtype=np.int64)
+
+        structure_path = run_result.output_dir / "prediction.pdb"
+        confidence_path = run_result.output_dir / "confidences.json"
+
+        if query_indices.size == 0:
+            records.append(
+                RawMetricRecord(
+                    sequence_id=job.sequence_id,
+                    state_name=job.state_name,
+                    structure_kind=job.structure_kind,
+                    af3_status="failed",
+                    error="Alignment mapping produced no query indices",
+                )
+            )
+            continue
+
+        predicted_ca = _extract_ca_coords(structure_path, chain_id=job.predicted_target_chain_id)
+        if predicted_ca.shape[0] <= int(query_indices.max()):
+            records.append(
+                RawMetricRecord(
+                    sequence_id=job.sequence_id,
+                    state_name=job.state_name,
+                    structure_kind=job.structure_kind,
+                    af3_status="failed",
+                    error=(
+                        f"Predicted structure has {predicted_ca.shape[0]} residues, "
+                        f"but query mapping needs index {int(query_indices.max())}"
+                    ),
+                )
+            )
+            continue
+
+        reference_subset = reference_ca[template_indices]
+        predicted_subset = predicted_ca[query_indices]
+        if reference_subset.shape != predicted_subset.shape:
+            records.append(
+                RawMetricRecord(
+                    sequence_id=job.sequence_id,
+                    state_name=job.state_name,
+                    structure_kind=job.structure_kind,
+                    af3_status="failed",
+                    error="Reference and predicted coordinate subsets do not match in shape",
+                )
+            )
+            continue
+
+        records.append(
+            RawMetricRecord(
+                sequence_id=job.sequence_id,
+                state_name=job.state_name,
+                structure_kind=job.structure_kind,
+                af3_status="completed",
+                predicted_structure_path=structure_path,
+                confidences_path=confidence_path if confidence_path.exists() else None,
+                tm_score=compute_tm_score(reference_subset, predicted_subset),
+                lddt=compute_lddt(reference_subset, predicted_subset),
+                rmsd=compute_rmsd(reference_subset, predicted_subset),
+                mean_plddt=extract_mean_plddt(confidence_path) if confidence_path.exists() else None,
+            )
+        )
 
     return tuple(records)

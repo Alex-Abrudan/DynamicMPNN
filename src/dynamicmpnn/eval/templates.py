@@ -24,6 +24,23 @@ class TemplateArtifact:
     ca_coords: tuple[tuple[float, float, float], ...]
 
 
+def _detached_deepcopy(residue):
+    """Copy a residue without copying the structure it belongs to.
+
+    Bio.PDB entities hold a `parent` reference, so deepcopying an attached
+    residue walks up to the Structure and copies every chain and atom under
+    it - and does that once per residue, which is quadratic in the entry. On
+    a 52-residue benchmark target it cost 82 s and 262M deepcopy calls;
+    detaching first makes it 200x cheaper and produces the same residue.
+    """
+    parent = residue.get_parent()
+    residue.detach_parent()
+    try:
+        return copy.deepcopy(residue)
+    finally:
+        residue.set_parent(parent)
+
+
 def _build_single_chain_structure(state: PreparedState) -> Structure:
     model = get_single_model(state.pdb_path)
     if state.chain_id not in model.child_dict:
@@ -38,7 +55,7 @@ def _build_single_chain_structure(state: PreparedState) -> Structure:
     for residue in source_chain.get_residues():
         if residue.id[0] not in {" ", "H_MSE"}:
             continue
-        copied = copy.deepcopy(residue)
+        copied = _detached_deepcopy(residue)
         copied.id = (" ", residue_counter, " ")
         out_chain.add(copied)
         residue_counter += 1

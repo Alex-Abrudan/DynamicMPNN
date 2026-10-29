@@ -75,6 +75,7 @@ def _aggregate_status(records: Sequence[RawMetricRecord], af3_enabled: bool) -> 
 def build_all_af3_results_dataframe(
     samples: Sequence[SampleRecord],
     records: Sequence[RawMetricRecord],
+    backend: str = "af3",
 ) -> pd.DataFrame:
     sequence_map = {sample.sequence_id: sample.sequence for sample in samples}
     rows = []
@@ -87,7 +88,7 @@ def build_all_af3_results_dataframe(
                 "structure_kind": record.structure_kind,
                 "seed": record.seed,
                 "af3_sample": record.af3_sample,
-                "af3_status": record.af3_status,
+                f"{backend}_status": record.af3_status,
                 "ranking_score": record.ranking_score,
                 "tm_score": record.tm_score,
                 "lddt": record.lddt,
@@ -109,7 +110,15 @@ def build_per_sequence_dataframe(
     include_decoys: bool,
     af3_enabled: bool,
     sequence_recovery_target_sequences: Sequence[str] = (),
+    backend: str = "af3",
 ) -> pd.DataFrame:
+    """Per-sequence metrics for one refolding backend.
+
+    `backend` names the status columns only; every metric column, including
+    the decoy-normalised ones, is computed identically. The AF2 initial-guess
+    path reuses this with backend="af2ig" so its decoy normalisation is the
+    same arithmetic on the same record type, not a parallel implementation.
+    """
     record_groups = _build_record_groups(records)
     rows = []
     states = ("state1", "state2")
@@ -129,7 +138,7 @@ def build_per_sequence_dataframe(
                 prefix = f"{state_name}_{structure_kind}"
                 group = record_groups.get((sample.sequence_id, state_name, structure_kind), [])
                 status = _aggregate_status(group, af3_enabled)
-                row[f"{prefix}_af3_status"] = status
+                row[f"{prefix}_{backend}_status"] = status
                 row[f"{prefix}_error"] = None if not group else "; ".join(
                     sorted({record.error for record in group if record.error})
                 ) or None
@@ -141,13 +150,13 @@ def build_per_sequence_dataframe(
                     target_statuses.append(status)
 
         if not af3_enabled:
-            row["af3_status"] = "skipped"
+            row[f"{backend}_status"] = "skipped"
         elif any(status == "failed" for status in target_statuses):
-            row["af3_status"] = "failed"
+            row[f"{backend}_status"] = "failed"
         elif target_statuses and all(status == "completed" for status in target_statuses):
-            row["af3_status"] = "completed"
+            row[f"{backend}_status"] = "completed"
         else:
-            row["af3_status"] = "partial"
+            row[f"{backend}_status"] = "partial"
 
         for metric_name in RAW_METRICS:
             row[f"pair_{metric_name}_mean"] = _mean(
@@ -196,12 +205,17 @@ def build_per_sequence_dataframe(
     return pd.DataFrame(rows)
 
 
-def write_reports(all_af3_results_df: pd.DataFrame, summary_df: pd.DataFrame, output_dir: Path) -> dict[str, str]:
-    all_results_path = output_dir / "all_af3_results.csv"
-    summary_path = output_dir / "summary_af3_results.csv"
+def write_reports(
+    all_af3_results_df: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    output_dir: Path,
+    backend: str = "af3",
+) -> dict[str, str]:
+    all_results_path = output_dir / f"all_{backend}_results.csv"
+    summary_path = output_dir / f"summary_{backend}_results.csv"
     all_af3_results_df.to_csv(all_results_path, index=False)
     summary_df.to_csv(summary_path, index=False)
     return {
-        "all_af3_results": str(all_results_path),
-        "summary_af3_results": str(summary_path),
+        f"all_{backend}_results": str(all_results_path),
+        f"summary_{backend}_results": str(summary_path),
     }

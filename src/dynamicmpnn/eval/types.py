@@ -76,6 +76,15 @@ class EvaluationRequest:
     af3_unpaired_msa_path: Optional[str] = None
     af3_paired_msa: Optional[str] = None
     af3_paired_msa_path: Optional[str] = None
+    af2ig_evaluate: bool = False
+    af2ig_executable: Optional[str] = None
+    af2ig_script: Optional[str] = None
+    af2ig_params_dir: Optional[str] = None
+    af2ig_initial_guess_dir: Optional[str] = None
+    af2ig_env_script: Optional[str] = None
+    af2ig_env: dict[str, str] = field(default_factory=dict)
+    af2ig_num_recycles: int = 1
+    af2ig_template_backbone: bool = True
 
     def to_manifest(self) -> dict[str, Any]:
         return {
@@ -107,6 +116,15 @@ class EvaluationRequest:
             "af3_unpaired_msa_path": self.af3_unpaired_msa_path,
             "af3_paired_msa": self.af3_paired_msa,
             "af3_paired_msa_path": self.af3_paired_msa_path,
+            "af2ig_evaluate": self.af2ig_evaluate,
+            "af2ig_executable": self.af2ig_executable,
+            "af2ig_script": self.af2ig_script,
+            "af2ig_params_dir": self.af2ig_params_dir,
+            "af2ig_initial_guess_dir": self.af2ig_initial_guess_dir,
+            "af2ig_env_script": self.af2ig_env_script,
+            "af2ig_env": dict(self.af2ig_env),
+            "af2ig_num_recycles": self.af2ig_num_recycles,
+            "af2ig_template_backbone": self.af2ig_template_backbone,
             "output_dir": str(self.output_dir),
         }
 
@@ -137,6 +155,46 @@ class AF3JobSpec:
     proteins: tuple[AF3ProteinSpec, ...]
     model_seeds: tuple[int, ...]
     predicted_target_chain_id: str = "A"
+
+
+@dataclass(frozen=True)
+class AF2IGJobSpec:
+    """One AF2 initial-guess prediction: a sequence folded from one backbone.
+
+    The AF3 analogue is AF3JobSpec. The seed backbone plays the part the
+    template mmCIF plays there, and carries the same index mapping, so a
+    decoy job seeds on the decoy shape and is scored against the decoy's own
+    coordinates exactly as the AF3 decoy arm is.
+    """
+
+    job_name: str
+    sequence_id: str
+    state_name: str
+    structure_kind: str
+    sequence: str
+    guess_npz: Path
+    query_indices: tuple[int, ...]
+    template_indices: tuple[int, ...]
+    num_recycles: int
+    template_backbone: bool
+    output_dir: Path
+    predicted_target_chain_id: str = "A"
+
+    def to_manifest(self) -> dict[str, Any]:
+        return {
+            "job_name": self.job_name,
+            "sequence_id": self.sequence_id,
+            "state_name": self.state_name,
+            "structure_kind": self.structure_kind,
+            "sequence": self.sequence,
+            "guess_npz": str(self.guess_npz),
+            "query_indices": list(self.query_indices),
+            "template_indices": list(self.template_indices),
+            "num_recycles": self.num_recycles,
+            "template_backbone": self.template_backbone,
+            "output_dir": str(self.output_dir),
+            "chain_id": self.predicted_target_chain_id,
+        }
 
 
 @dataclass(frozen=True)

@@ -28,6 +28,9 @@ Required paths:
 Optional (for AF3 evaluation):
 - `AF3_EXECUTABLE`, `AF3_SCRIPT`, `AF3_MODEL_DIR`, `AF3_DB_DIR`
 
+Optional (for AF2 initial-guess evaluation):
+- `AF2IG_PYTHON`, `AF2IG_PARAMS_DIR`, `AF2IG_INITIAL_GUESS_DIR`
+
 ## Data
 
 Download processed `.pt` files from [Zenodo](https://zenodo.org/records/19687631) and extract to `data/`:
@@ -128,6 +131,39 @@ Metrics computed:
 - **pLDDT**: Predicted local distance difference test
 
 Decoy normalization is used for fair comparison. Output: `summary_af3_results.csv`
+
+### AF2 Initial-Guess Metrics
+
+An alternative refoldability metric that cannot see the native sequence. The
+AF3 template path hands AlphaFold3 a template mmCIF carrying the *native*
+residue identities; this path seeds AlphaFold2's recycling positions with the
+backbone instead (Bennett et al., `dl_binder_design`) and templates the same
+backbone under the **designed** sequence, so only geometry reaches the model.
+
+```bash
+dynamicmpnn-evaluate \
+  eval=1bdt_1qtg \
+  eval.model_ref=checkpoints/multi_chain_reload.ckpt \
+  eval.af2ig_evaluate=true \
+  output_dir=runs/1bdt_1qtg
+```
+
+It runs alongside `eval.af3_evaluate` or on its own, produces the same four
+metrics on the same residues, and uses the configured decoys the same way: a
+decoy job seeds on the decoy backbone and is scored against the decoy's own
+coordinates, so `*_decoy_normalized_*` means exactly what it means for AF3.
+Output: `summary_af2ig_results.csv`.
+
+AlphaFold2 needs a jax that conflicts with this package's torch stack, so the
+predictor runs as a subprocess under `eval.af2ig.executable` — the same
+arrangement `eval.af3.executable` uses. Two settings matter:
+
+- `eval.af2ig.num_recycles` (default 1). The seed survives only the first
+  recycle, because `get_prev` overwrites `prev_pos` with the model's own
+  output, so *fewer* recycles constrain the prediction more.
+- `eval.af2ig.template_backbone` (default true). For a monomer the seed alone
+  is too weak to hold; passing the same backbone to the template stack is what
+  makes the metric bite.
 
 ## Data Preprocessing (optional)
 

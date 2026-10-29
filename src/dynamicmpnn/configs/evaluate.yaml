@@ -20,6 +20,7 @@ eval:
   sampling_mode: multi
   refold_mode: multi
   af3_evaluate: false
+  af2ig_evaluate: false
   targets:
     state1:
       pdb_path: ???
@@ -48,3 +49,16 @@ eval:
     paired_msa: null
     paired_msa_path: null
     model_seeds: [0, 1, 2]
+  af2ig:
+    # AlphaFold2 needs a jax that conflicts with this package's torch stack,
+    # so the predictor runs as a subprocess under its own interpreter.
+    executable: ${oc.env:AF2IG_PYTHON,null}
+    script: null  # defaults to the runner bundled in dynamicmpnn/eval
+    params_dir: ${oc.env:AF2IG_PARAMS_DIR,null}
+    initial_guess_dir: ${oc.env:AF2IG_INITIAL_GUESS_DIR,null}
+    env_script: ${oc.env:AF2IG_ENV_SCRIPT,null}
+    env: {}
+    # The seed survives only the first recycle - get_prev overwrites prev_pos
+    # with the model's own output - so fewer recycles constrain it more.
+    num_recycles: 1
+    template_backbone: true
