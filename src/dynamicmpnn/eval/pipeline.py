@@ -9,11 +9,13 @@ from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 
 from dynamicmpnn import constants
+from dynamicmpnn.eval.af2ig import build_af2ig_jobs, run_af2ig_jobs
 from dynamicmpnn.eval.af3 import build_af3_jobs, run_af3_jobs, write_af3_jsons
 from dynamicmpnn.eval.aggregation import build_all_af3_results_dataframe, build_per_sequence_dataframe, write_reports
+from dynamicmpnn.eval.guesses import prepare_guesses
 from dynamicmpnn.eval.inputs import resolve_inputs
 from dynamicmpnn.eval.sampling import sample_sequences, write_sample_artifacts
-from dynamicmpnn.eval.scoring import score_jobs
+from dynamicmpnn.eval.scoring import score_af2ig_jobs, score_jobs
 from dynamicmpnn.eval.templates import prepare_templates
 from dynamicmpnn.eval.types import AlignmentSpec, DecoyInput, EvaluationRequest, StateInput
 
@@ -229,6 +231,31 @@ def _build_af3_settings(cfg: DictConfig) -> dict[str, object]:
     }
 
 
+_BUNDLED_AF2IG_RUNNER = Path(__file__).resolve().parent / "af2ig_runner.py"
+
+
+def _build_af2ig_settings(cfg: DictConfig) -> dict[str, object]:
+    """Resolve eval.af2ig.*, as _build_af3_settings does for eval.af3.*.
+
+    `script` defaults to the runner shipped beside this module; only the
+    interpreter that can import AlphaFold2 has to be configured.
+    """
+    af2ig_cfg = cfg.eval.get("af2ig")
+    if not af2ig_cfg:
+        af2ig_cfg = OmegaConf.create({})
+
+    return {
+        "executable": _optional_inline(af2ig_cfg.get("executable")),
+        "script": _optional_path(af2ig_cfg.get("script")) or str(_BUNDLED_AF2IG_RUNNER),
+        "params_dir": _optional_path(af2ig_cfg.get("params_dir")),
+        "initial_guess_dir": _optional_path(af2ig_cfg.get("initial_guess_dir")),
+        "env_script": _optional_path(af2ig_cfg.get("env_script")),
+        "env": _optional_env_map(af2ig_cfg.get("env")),
+        "num_recycles": int(af2ig_cfg.get("num_recycles", 1)),
+        "template_backbone": bool(af2ig_cfg.get("template_backbone", True)),
+    }
+
+
 def _resolve_eval_mode(cfg: DictConfig, key: str, default: str = "multi") -> str:
     value = str(cfg.eval.get(key, default)).strip().lower()
     if value not in _VALID_EVAL_MODES:
@@ -275,6 +302,15 @@ def build_request(cfg: DictConfig) -> EvaluationRequest:
     if af3_evaluate and not af3_executable:
         raise ValueError("eval.af3.executable is required when eval.af3_evaluate=true")
 
+    af2ig_settings = _build_af2ig_settings(cfg)
+    af2ig_evaluate = bool(cfg.eval.get("af2ig_evaluate", False))
+    if af2ig_evaluate and not af2ig_settings["executable"]:
+        raise ValueError("eval.af2ig.executable is required when eval.af2ig_evaluate=true")
+    if af2ig_evaluate and not af2ig_settings["params_dir"]:
+        raise ValueError("eval.af2ig.params_dir is required when eval.af2ig_evaluate=true")
+    if af2ig_evaluate and int(af2ig_settings["num_recycles"]) < 0:
+        raise ValueError("eval.af2ig.num_recycles must be zero or greater")
+
     return EvaluationRequest(
         model_ref=str(cfg.eval.model_ref),
         resolved_model_path=_resolve_model_path(cfg),
@@ -300,6 +336,15 @@ def build_request(cfg: DictConfig) -> EvaluationRequest:
         af3_unpaired_msa_path=af3_settings["unpaired_msa_path"],
         af3_paired_msa=af3_settings["paired_msa"],
         af3_paired_msa_path=af3_settings["paired_msa_path"],
+        af2ig_evaluate=af2ig_evaluate,
+        af2ig_executable=None if af2ig_settings["executable"] is None else str(af2ig_settings["executable"]),
+        af2ig_script=af2ig_settings["script"],
+        af2ig_params_dir=af2ig_settings["params_dir"],
+        af2ig_initial_guess_dir=af2ig_settings["initial_guess_dir"],
+        af2ig_env_script=af2ig_settings["env_script"],
+        af2ig_env=af2ig_settings["env"],
+        af2ig_num_recycles=int(af2ig_settings["num_recycles"]),
+        af2ig_template_backbone=bool(af2ig_settings["template_backbone"]),
     )
 
 
@@ -363,6 +408,39 @@ def run_evaluation(cfg: DictConfig) -> dict[str, str]:
     )
     all_af3_results_df = build_all_af3_results_dataframe(sample_result.samples, raw_records)
     report_paths = write_reports(all_af3_results_df, per_sequence_df, bundle.request.output_dir)
+
+    if bundle.request.af2ig_evaluate:
+        af2ig_dir = bundle.request.output_dir / "af2ig"
+        guesses = prepare_guesses(bundle, af2ig_dir / "guesses")
+        af2ig_jobs = build_af2ig_jobs(
+            sample_result.samples,
+            guesses,
+            af2ig_dir / "raw",
+            num_recycles=bundle.request.af2ig_num_recycles,
+            template_backbone=bundle.request.af2ig_template_backbone,
+        )
+        af2ig_run_results = run_af2ig_jobs(
+            bundle.request.af2ig_executable,
+            af2ig_jobs,
+            script=bundle.request.af2ig_script,
+            params_dir=bundle.request.af2ig_params_dir,
+            initial_guess_dir=bundle.request.af2ig_initial_guess_dir,
+            env_script=bundle.request.af2ig_env_script,
+            env=bundle.request.af2ig_env,
+        )
+        af2ig_records = score_af2ig_jobs(af2ig_jobs, guesses, af2ig_run_results)
+        af2ig_summary_df = build_per_sequence_dataframe(
+            sample_result.samples,
+            af2ig_records,
+            include_decoys=bool(bundle.decoys),
+            af3_enabled=True,
+            sequence_recovery_target_sequences=bundle.request.sequence_recovery_target_sequences,
+            backend="af2ig",
+        )
+        af2ig_all_df = build_all_af3_results_dataframe(sample_result.samples, af2ig_records, backend="af2ig")
+        report_paths.update(
+            write_reports(af2ig_all_df, af2ig_summary_df, bundle.request.output_dir, backend="af2ig")
+        )
 
     output_paths = {
         "manifest": str(manifest_path),
